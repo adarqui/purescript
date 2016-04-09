@@ -72,13 +72,12 @@ moduleToCoreFn env (A.Module _ coms mn decls (Just exps)) =
   declToCoreFn ss _   (A.DataBindingGroupDeclaration ds) = concatMap (declToCoreFn ss []) ds
   declToCoreFn ss com (A.ValueDeclaration name _ _ (Right e)) =
     [NonRec (ssA ss) name (exprToCoreFn ss com Nothing e)]
-  declToCoreFn ss com (A.FixityDeclaration _ name (Just (Qualified mn' alias))) =
-    let meta = A.foldFixityAlias
-                 (\value -> getValueMeta (Qualified mn' value))
-                 (\ctor -> Just $ getConstructorMeta (Qualified mn' ctor))
-                 alias
-        alias' = Qualified mn' (A.foldFixityAlias id properToIdent alias)
-    in [NonRec (ssA ss) (Op name) (Var (ss, com, Nothing, meta) alias')]
+  declToCoreFn ss com (A.FixityDeclaration _ name (Just (Qualified mn' (A.AliasValue name')))) =
+    let meta = getValueMeta (Qualified mn' name')
+    in [NonRec (ssA ss) (Op name) (Var (ss, com, Nothing, meta) (Qualified mn' name'))]
+  declToCoreFn ss com (A.FixityDeclaration _ name (Just (Qualified mn' (A.AliasConstructor name')))) =
+    let meta = Just $ getConstructorMeta (Qualified mn' name')
+    in [NonRec (ssA ss) (Op name) (Var (ss, com, Nothing, meta) (Qualified mn' (properToIdent name')))]
   declToCoreFn ss _   (A.BindingGroupDeclaration ds) =
     [Rec $ map (\(name, _, e) -> ((ssA ss, name), exprToCoreFn ss [] Nothing e)) ds]
   declToCoreFn ss com (A.TypeClassDeclaration name _ supers members) =

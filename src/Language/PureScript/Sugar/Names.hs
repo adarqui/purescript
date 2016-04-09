@@ -178,6 +178,8 @@ renameInModule env imports (Module ss coms mn decls exps) =
       fmap AliasValue <$> updateValueName (Qualified mn' ident) pos
     updateAlias (Qualified mn' (AliasConstructor ctor)) =
       fmap AliasConstructor <$> updateDataConstructorName (Qualified mn' ctor) pos
+    updateAlias (Qualified mn' (AliasType ty)) =
+      fmap AliasType <$> updateTypeName (Qualified mn' ty) pos
   updateDecl s d = return (s, d)
 
   updateValue

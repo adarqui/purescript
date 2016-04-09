@@ -69,6 +69,7 @@ rebracket externs ms = do
   makeLookupEntry :: FixityRecord -> Maybe (Qualified Ident, Qualified FixityAlias)
   makeLookupEntry (qname, _, _, alias) = (qname, ) <$> alias
 
+  -- TODO: rename in types
   renameAliasedOperators :: M.Map (Qualified Ident) (Qualified FixityAlias) -> Module -> m Module
   renameAliasedOperators aliased (Module ss coms mn ds exts) =
     Module ss coms mn <$> mapM f' ds <*> pure exts
@@ -84,7 +85,7 @@ rebracket externs ms = do
     goExpr pos (Var name) = return (pos, case name `M.lookup` aliased of
       Just (Qualified mn' (AliasValue alias)) -> Var (Qualified mn' alias)
       Just (Qualified mn' (AliasConstructor alias)) -> Constructor (Qualified mn' alias)
-      Nothing -> Var name)
+      _ -> Var name)
     goExpr pos other = return (pos, other)
 
     goBinder :: Maybe SourceSpan -> Binder -> m (Maybe SourceSpan, Binder)
@@ -95,7 +96,7 @@ rebracket externs ms = do
           throwError . errorMessage $ InvalidOperatorInBinder (disqualify name) alias
       Just (Qualified mn' (AliasConstructor alias)) ->
         return (pos, ConstructorBinder (Qualified mn' alias) [lhs, rhs])
-      Nothing ->
+      _ ->
         maybe id rethrowWithPosition pos $
           throwError . errorMessage $ UnknownValue name
     goBinder _ (BinaryNoParensBinder {}) =

@@ -214,15 +214,18 @@ data Declaration
 data FixityAlias
   = AliasValue Ident
   | AliasConstructor (ProperName 'ConstructorName)
+  | AliasType (ProperName 'TypeName)
   deriving (Eq, Ord, Show, Read)
 
 foldFixityAlias
   :: (Ident -> a)
   -> (ProperName 'ConstructorName -> a)
+  -> (ProperName 'TypeName -> a)
   -> FixityAlias
   -> a
-foldFixityAlias f _ (AliasValue name) = f name
-foldFixityAlias _ g (AliasConstructor name) = g name
+foldFixityAlias f _ _ (AliasValue name) = f name
+foldFixityAlias _ g _ (AliasConstructor name) = g name
+foldFixityAlias _ _ h (AliasType name) = h name
 
 -- | The members of a type class instance declaration
 data TypeInstanceBody
