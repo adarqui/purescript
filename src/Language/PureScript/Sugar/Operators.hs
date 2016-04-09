@@ -28,7 +28,9 @@ import Language.PureScript.Names
 import Language.PureScript.Sugar.Operators.Binders
 import Language.PureScript.Sugar.Operators.Expr
 import Language.PureScript.Traversals (defS)
+import Language.PureScript.Types
 
+import Control.Arrow (second)
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.Supply.Class
 
@@ -69,7 +71,6 @@ rebracket externs ms = do
   makeLookupEntry :: FixityRecord -> Maybe (Qualified Ident, Qualified FixityAlias)
   makeLookupEntry (qname, _, _, alias) = (qname, ) <$> alias
 
-  -- TODO: rename in types
   renameAliasedOperators :: M.Map (Qualified Ident) (Qualified FixityAlias) -> Module -> m Module
   renameAliasedOperators aliased (Module ss coms mn ds exts) =
     Module ss coms mn <$> mapM f' ds <*> pure exts
@@ -78,6 +79,22 @@ rebracket externs ms = do
 
     goDecl :: Maybe SourceSpan -> Declaration -> m (Maybe SourceSpan, Declaration)
     goDecl _ d@(PositionedDeclaration pos _ _) = return (Just pos, d)
+    goDecl pos (DataDeclaration ddt name args dctors) =
+      let dctors' = map (second (map goType)) dctors
+      in return (pos, DataDeclaration ddt name args dctors')
+    goDecl pos (ExternDeclaration name ty) =
+      return (pos, ExternDeclaration name (goType ty))
+    goDecl pos (TypeClassDeclaration name args implies decls) =
+      let implies' = map (second (map goType)) implies
+      in return (pos, TypeClassDeclaration name args implies' decls)
+    goDecl pos (TypeInstanceDeclaration name cs className tys impls) =
+      let cs' = map (second (map goType)) cs
+          tys' = map goType tys
+      in return (pos, TypeInstanceDeclaration name cs' className tys' impls)
+    goDecl pos (TypeSynonymDeclaration name args ty) =
+      return (pos, TypeSynonymDeclaration name args (goType ty))
+    goDecl pos (TypeDeclaration expr ty) =
+      return (pos, TypeDeclaration expr (goType ty))
     goDecl pos other = return (pos, other)
 
     goExpr :: Maybe SourceSpan -> Expr -> m (Maybe SourceSpan, Expr)
@@ -86,6 +103,12 @@ rebracket externs ms = do
       Just (Qualified mn' (AliasValue alias)) -> Var (Qualified mn' alias)
       Just (Qualified mn' (AliasConstructor alias)) -> Constructor (Qualified mn' alias)
       _ -> Var name)
+    goExpr pos (TypeClassDictionary (name, tys) dicts) =
+      return (pos, TypeClassDictionary (name, (map goType tys)) dicts)
+    goExpr pos (SuperClassDictionary cls tys) =
+      return (pos, SuperClassDictionary cls (map goType tys))
+    goExpr pos (TypedValue check v ty) =
+      return (pos, TypedValue check v (goType ty))
     goExpr pos other = return (pos, other)
 
     goBinder :: Maybe SourceSpan -> Binder -> m (Maybe SourceSpan, Binder)
@@ -102,6 +125,12 @@ rebracket externs ms = do
     goBinder _ (BinaryNoParensBinder {}) =
       internalError "BinaryNoParensBinder has no OpBinder"
     goBinder pos other = return (pos, other)
+
+    goType :: Type -> Type
+    goType = everywhereOnTypes go
+      where
+      go :: Type -> Type
+      go other = other
 
 removeSignedLiterals :: Module -> Module
 removeSignedLiterals (Module ss coms mn ds exts) = Module ss coms mn (map f' ds) exts
