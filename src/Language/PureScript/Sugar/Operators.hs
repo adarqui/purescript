@@ -39,18 +39,13 @@ import qualified Data.Map as M
 
 import qualified Language.PureScript.Constants as C
 
--- TODO: in 0.9 operators names can have their own type rather than being in a sum with `Ident`, and `AliasName` no longer needs to be optional
+-- TODO: in 0.9 operators names can have their own type rather than being in a sum with `Ident`, and `FixityAlias` no longer needs to be optional
 
 -- |
 -- An operator associated with its declaration position, fixity, and the name
 -- of the function or data constructor it is an alias for.
 --
-type FixityRecord = (Qualified Ident, SourceSpan, Fixity, Maybe AliasName)
-
--- |
--- An operator can be an alias for a function or a data constructor.
---
-type AliasName = Either (Qualified Ident) (Qualified (ProperName 'ConstructorName))
+type FixityRecord = (Qualified Ident, SourceSpan, Fixity, Maybe (Qualified FixityAlias))
 
 -- |
 -- Remove explicit parentheses and reorder binary operator applications
@@ -71,10 +66,10 @@ rebracket externs ms = do
 
   where
 
-  makeLookupEntry :: FixityRecord -> Maybe (Qualified Ident, AliasName)
+  makeLookupEntry :: FixityRecord -> Maybe (Qualified Ident, Qualified FixityAlias)
   makeLookupEntry (qname, _, _, alias) = (qname, ) <$> alias
 
-  renameAliasedOperators :: M.Map (Qualified Ident) AliasName -> Module -> m Module
+  renameAliasedOperators :: M.Map (Qualified Ident) (Qualified FixityAlias) -> Module -> m Module
   renameAliasedOperators aliased (Module ss coms mn ds exts) =
     Module ss coms mn <$> mapM f' ds <*> pure exts
     where
@@ -87,19 +82,19 @@ rebracket externs ms = do
     goExpr :: Maybe SourceSpan -> Expr -> m (Maybe SourceSpan, Expr)
     goExpr _ e@(PositionedValue pos _ _) = return (Just pos, e)
     goExpr pos (Var name) = return (pos, case name `M.lookup` aliased of
-      Just (Left alias) -> Var alias
-      Just (Right alias) -> Constructor alias
+      Just (Qualified mn' (AliasValue alias)) -> Var (Qualified mn' alias)
+      Just (Qualified mn' (AliasConstructor alias)) -> Constructor (Qualified mn' alias)
       Nothing -> Var name)
     goExpr pos other = return (pos, other)
 
     goBinder :: Maybe SourceSpan -> Binder -> m (Maybe SourceSpan, Binder)
     goBinder _ b@(PositionedBinder pos _ _) = return (Just pos, b)
     goBinder pos (BinaryNoParensBinder (OpBinder name) lhs rhs) = case name `M.lookup` aliased of
-      Just (Left alias) ->
+      Just (Qualified _ (AliasValue alias)) ->
         maybe id rethrowWithPosition pos $
-          throwError . errorMessage $ InvalidOperatorInBinder (disqualify name) (disqualify alias)
-      Just (Right alias) ->
-        return (pos, ConstructorBinder alias [lhs, rhs])
+          throwError . errorMessage $ InvalidOperatorInBinder (disqualify name) alias
+      Just (Qualified mn' (AliasConstructor alias)) ->
+        return (pos, ConstructorBinder (Qualified mn' alias) [lhs, rhs])
       Nothing ->
         maybe id rethrowWithPosition pos $
           throwError . errorMessage $ UnknownValue name

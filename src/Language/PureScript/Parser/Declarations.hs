@@ -122,12 +122,12 @@ parseFixityDeclaration :: TokenParser Declaration
 parseFixityDeclaration = do
   fixity <- parseFixity
   indented
-  alias <- P.optionMaybe $ aliased <* reserved "as"
+  alias <- P.optionMaybe $ parseQualified aliased <* reserved "as"
   name <- symbol
   return $ FixityDeclaration fixity name alias
   where
-  aliased = (Left <$> parseQualified (Ident <$> identifier))
-        <|> (Right <$> parseQualified (ProperName <$> uname))
+  aliased = (AliasValue . Ident <$> identifier)
+        <|> (AliasConstructor . ProperName <$> uname)
 
 parseImportDeclaration :: TokenParser Declaration
 parseImportDeclaration = do

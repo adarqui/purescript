@@ -171,7 +171,13 @@ renameInModule env imports (Module ss coms mn decls exps) =
   updateDecl (pos, bound) (ExternDeclaration name ty) =
     (,) (pos, name : bound) <$> (ExternDeclaration name <$> updateTypesEverywhere pos ty)
   updateDecl (pos, bound) (FixityDeclaration fx name alias) =
-    (,) (pos, bound) <$> (FixityDeclaration fx name <$> traverse (eitherM (`updateValueName` pos) (`updateDataConstructorName` pos)) alias)
+    (,) (pos, bound) <$> (FixityDeclaration fx name <$> traverse updateAlias alias)
+    where
+    updateAlias :: Qualified FixityAlias -> m (Qualified FixityAlias)
+    updateAlias (Qualified mn' (AliasValue ident)) =
+      fmap AliasValue <$> updateValueName (Qualified mn' ident) pos
+    updateAlias (Qualified mn' (AliasConstructor ctor)) =
+      fmap AliasConstructor <$> updateDataConstructorName (Qualified mn' ctor) pos
   updateDecl s d = return (s, d)
 
   updateValue
