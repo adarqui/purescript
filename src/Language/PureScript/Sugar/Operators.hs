@@ -27,10 +27,9 @@ import Language.PureScript.Externs
 import Language.PureScript.Names
 import Language.PureScript.Sugar.Operators.Binders
 import Language.PureScript.Sugar.Operators.Expr
-import Language.PureScript.Traversals (defS)
+import Language.PureScript.Traversals (defS, sndM)
 import Language.PureScript.Types
 
-import Control.Arrow (second)
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.Supply.Class
 
@@ -79,22 +78,25 @@ rebracket externs ms = do
 
     goDecl :: Maybe SourceSpan -> Declaration -> m (Maybe SourceSpan, Declaration)
     goDecl _ d@(PositionedDeclaration pos _ _) = return (Just pos, d)
-    goDecl pos (DataDeclaration ddt name args dctors) =
-      let dctors' = map (second (map goType)) dctors
-      in return (pos, DataDeclaration ddt name args dctors')
-    goDecl pos (ExternDeclaration name ty) =
-      return (pos, ExternDeclaration name (goType ty))
-    goDecl pos (TypeClassDeclaration name args implies decls) =
-      let implies' = map (second (map goType)) implies
-      in return (pos, TypeClassDeclaration name args implies' decls)
-    goDecl pos (TypeInstanceDeclaration name cs className tys impls) =
-      let cs' = map (second (map goType)) cs
-          tys' = map goType tys
-      in return (pos, TypeInstanceDeclaration name cs' className tys' impls)
-    goDecl pos (TypeSynonymDeclaration name args ty) =
-      return (pos, TypeSynonymDeclaration name args (goType ty))
-    goDecl pos (TypeDeclaration expr ty) =
-      return (pos, TypeDeclaration expr (goType ty))
+    goDecl pos (DataDeclaration ddt name args dctors) = do
+      dctors' <- traverse (sndM (traverse (goType pos))) dctors
+      return (pos, DataDeclaration ddt name args dctors')
+    goDecl pos (ExternDeclaration name ty) = do
+      ty' <- goType pos ty
+      return (pos, ExternDeclaration name ty')
+    goDecl pos (TypeClassDeclaration name args implies decls) = do
+      implies' <- traverse (sndM (traverse (goType pos))) implies
+      return (pos, TypeClassDeclaration name args implies' decls)
+    goDecl pos (TypeInstanceDeclaration name cs className tys impls) = do
+      cs' <- traverse (sndM (traverse (goType pos))) cs
+      tys' <- traverse (goType pos) tys
+      return (pos, TypeInstanceDeclaration name cs' className tys' impls)
+    goDecl pos (TypeSynonymDeclaration name args ty) = do
+      ty' <- goType pos ty
+      return (pos, TypeSynonymDeclaration name args ty')
+    goDecl pos (TypeDeclaration expr ty) = do
+      ty' <- goType pos ty
+      return (pos, TypeDeclaration expr ty')
     goDecl pos other = return (pos, other)
 
     goExpr :: Maybe SourceSpan -> Expr -> m (Maybe SourceSpan, Expr)
@@ -103,12 +105,15 @@ rebracket externs ms = do
       Just (Qualified mn' (AliasValue alias)) -> Var (Qualified mn' alias)
       Just (Qualified mn' (AliasConstructor alias)) -> Constructor (Qualified mn' alias)
       _ -> Var name)
-    goExpr pos (TypeClassDictionary (name, tys) dicts) =
-      return (pos, TypeClassDictionary (name, (map goType tys)) dicts)
-    goExpr pos (SuperClassDictionary cls tys) =
-      return (pos, SuperClassDictionary cls (map goType tys))
-    goExpr pos (TypedValue check v ty) =
-      return (pos, TypedValue check v (goType ty))
+    goExpr pos (TypeClassDictionary (name, tys) dicts) = do
+      tys' <- traverse (goType pos) tys
+      return (pos, TypeClassDictionary (name, tys') dicts)
+    goExpr pos (SuperClassDictionary cls tys) = do
+      tys' <- traverse (goType pos) tys
+      return (pos, SuperClassDictionary cls tys')
+    goExpr pos (TypedValue check v ty) = do
+      ty' <- goType pos ty
+      return (pos, TypedValue check v ty')
     goExpr pos other = return (pos, other)
 
     goBinder :: Maybe SourceSpan -> Binder -> m (Maybe SourceSpan, Binder)
@@ -126,11 +131,17 @@ rebracket externs ms = do
       internalError "BinaryNoParensBinder has no OpBinder"
     goBinder pos other = return (pos, other)
 
-    goType :: Type -> Type
-    goType = everywhereOnTypes go
+    goType :: Maybe SourceSpan -> Type -> m Type
+    goType pos = everywhereOnTypesM go
       where
-      go :: Type -> Type
-      go other = other
+      go :: Type -> m Type
+      go (TypeOp name) = case name `M.lookup` aliased of
+        Just (Qualified mn' (AliasType alias)) ->
+          return $ TypeConstructor (Qualified mn' alias)
+        _ ->
+          maybe id rethrowWithPosition pos $
+            throwError . errorMessage $ UnknownTypeOperator $ disqualify name
+      go other = return other
 
 removeSignedLiterals :: Module -> Module
 removeSignedLiterals (Module ss coms mn ds exts) = Module ss coms mn (map f' ds) exts

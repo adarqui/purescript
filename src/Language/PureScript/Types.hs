@@ -49,6 +49,11 @@ data Type
   --
   | TypeConstructor (Qualified (ProperName 'TypeName))
   -- |
+  -- A type operator. This will be desugared into a type constructor during the
+  -- "operators" phase of desugaring.
+  --
+  | TypeOp (Qualified Ident)
+  -- |
   -- A type application
   --
   | TypeApp Type Type

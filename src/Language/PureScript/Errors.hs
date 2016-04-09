@@ -152,6 +152,7 @@ data SimpleErrorMessage
   | CaseBinderLengthDiffers Int [Binder]
   | IncorrectAnonymousArgument
   | InvalidOperatorInBinder Ident Ident
+  | UnknownTypeOperator Ident
   | DeprecatedRequirePath
   | CannotGeneralizeRecursiveFunction Ident Type
   deriving (Show)
@@ -336,6 +337,7 @@ errorCode em = case unwrapErrorMessage em of
   CaseBinderLengthDiffers{} -> "CaseBinderLengthDiffers"
   IncorrectAnonymousArgument -> "IncorrectAnonymousArgument"
   InvalidOperatorInBinder{} -> "InvalidOperatorInBinder"
+  UnknownTypeOperator{} -> "UnknownTypeOperator"
   DeprecatedRequirePath{} -> "DeprecatedRequirePath"
   CannotGeneralizeRecursiveFunction{} -> "CannotGeneralizeRecursiveFunction"
 
@@ -993,8 +995,13 @@ prettyPrintSingleError full level showWiki e = flip evalState defaultUnknownMap 
 
     renderSimpleErrorMessage (InvalidOperatorInBinder op fn) =
       paras [ line $ "Operator " ++ showIdent op ++ " cannot be used in a pattern as it is an alias for function " ++ showIdent fn ++ "."
-              , line "Only aliases for data constructors may be used in patterns."
-              ]
+            , line "Only aliases for data constructors may be used in patterns."
+            ]
+
+    renderSimpleErrorMessage (UnknownTypeOperator ident) =
+      paras [ line $ "Unknown type operator " ++ showIdent ident ++ "."
+            , line "No alias was found in scope to allow this operator to be used in a type signature."
+            ]
 
     renderSimpleErrorMessage DeprecatedRequirePath =
       line "The require-path option is deprecated and will be removed in PureScript 0.9."
