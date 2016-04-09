@@ -157,8 +157,12 @@ rebracketModule
   -> Module
   -> m Module
 rebracketModule opTable (Module ss coms mn ds exts) =
-  let (f, _, _) = everywhereOnValuesTopDownM return (matchExprOperators opTable) (matchBinderOperators opTable)
-  in Module ss coms mn <$> (map removeParens <$> parU ds f) <*> pure exts
+  Module ss coms mn <$> (map removeParens <$> parU ds f) <*> pure exts
+  where
+  (f, _, _) = everywhereOnValuesTopDownM return (return . goExpr) (return . goBinder)
+  goExpr = matchExprOperators opTable
+  goBinder = matchBinderOperators opTable
+
 
 removeParens :: Declaration -> Declaration
 removeParens =
