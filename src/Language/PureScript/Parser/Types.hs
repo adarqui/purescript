@@ -53,7 +53,7 @@ parseTypeAtom = indented *> P.choice
             , parseTypeConstructor
             -- This try is needed due to some unfortunate ambiguities between rows and kinded types
             , P.try (parens parseRow)
-            , parens parsePolyType
+            , ParensInType <$> parens parsePolyType
             ]
 
 parseConstrainedType :: TokenParser Type
