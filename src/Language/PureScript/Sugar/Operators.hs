@@ -1,4 +1,5 @@
 {-# LANGUAGE FlexibleContexts #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -25,6 +26,7 @@ import Language.PureScript.Externs
 import Language.PureScript.Names
 import Language.PureScript.Sugar.Operators.Binders
 import Language.PureScript.Sugar.Operators.Expr
+import Language.PureScript.Sugar.Operators.Types
 import Language.PureScript.Traversals (defS, sndM)
 import Language.PureScript.Types
 
@@ -33,7 +35,7 @@ import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.Supply.Class
 
 import Data.Function (on)
-import Data.List (groupBy, sortBy)
+import Data.List (partition, groupBy, sortBy)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map as M
 
@@ -57,20 +59,46 @@ rebracket
   -> [Module]
   -> m [Module]
 rebracket externs ms = do
-  let fixities = concatMap externsFixities externs ++ concatMap collectFixities ms
-  ensureNoDuplicates $ map (\(i, pos, _, _) -> (i, pos)) fixities
-  let opTable = customOperatorTable $ map (\(i, _, f, _) -> (i, f)) fixities
-  ms' <- traverse (rebracketModule opTable) ms
-  let aliased = M.fromList (mapMaybe makeLookupEntry fixities)
-  mapM (renameAliasedOperators aliased) ms'
+  let (valueFixities, typeFixities) = partition isTypeFixity $
+        concatMap externsFixities externs ++ concatMap collectFixities ms
+
+  ensureNoDuplicates' $ valueFixities
+  ensureNoDuplicates' $ typeFixities
+
+  let valueOpTable = customOperatorTable' valueFixities
+      typeOpTable = customOperatorTable' typeFixities
+  ms' <- traverse (rebracketModule valueOpTable typeOpTable) ms
+
+  let valueAliased = M.fromList (mapMaybe makeLookupEntry valueFixities)
+      typeAliased = M.fromList (mapMaybe makeLookupEntry typeFixities)
+  mapM (renameAliasedOperators valueAliased typeAliased) ms'
 
   where
+
+  isTypeFixity :: FixityRecord -> Bool
+  -- Nothing case for FixityAlias can only ever be a value fixity, as it's not
+  -- possible to define types with operator names aside through aliasing.
+  -- TODO: This comment is redundant after 0.9.
+  isTypeFixity (_, _, _, Just (Qualified _ (AliasType _))) = True
+  isTypeFixity _ = False
+
+  ensureNoDuplicates' :: [FixityRecord] -> m ()
+  ensureNoDuplicates' =
+    ensureNoDuplicates . map (\(i, pos, _, _) -> (i, pos))
+
+  customOperatorTable' :: [FixityRecord] -> [[(Qualified Ident, Associativity)]]
+  customOperatorTable' =
+    customOperatorTable . map (\(i, _, f, _) -> (i, f))
 
   makeLookupEntry :: FixityRecord -> Maybe (Qualified Ident, Qualified FixityAlias)
   makeLookupEntry (qname, _, _, alias) = (qname, ) <$> alias
 
-  renameAliasedOperators :: M.Map (Qualified Ident) (Qualified FixityAlias) -> Module -> m Module
-  renameAliasedOperators aliased (Module ss coms mn ds exts) =
+  renameAliasedOperators
+    :: M.Map (Qualified Ident) (Qualified FixityAlias)
+    -> M.Map (Qualified Ident) (Qualified FixityAlias)
+    -> Module
+    -> m Module
+  renameAliasedOperators valueAliased typeAliased (Module ss coms mn ds exts) =
     Module ss coms mn <$> mapM f' ds <*> pure exts
     where
     (goDecl', goExpr') = updateTypes goType
@@ -89,7 +117,7 @@ rebracket externs ms = do
 
     goExpr :: Maybe SourceSpan -> Expr -> m (Maybe SourceSpan, Expr)
     goExpr _ e@(PositionedValue pos _ _) = return (Just pos, e)
-    goExpr pos (Var name) = return (pos, case name `M.lookup` aliased of
+    goExpr pos (Var name) = return (pos, case name `M.lookup` valueAliased of
       Just (Qualified mn' (AliasValue alias)) -> Var (Qualified mn' alias)
       Just (Qualified mn' (AliasConstructor alias)) -> Constructor (Qualified mn' alias)
       _ -> Var name)
@@ -97,7 +125,7 @@ rebracket externs ms = do
 
     goBinder :: Maybe SourceSpan -> Binder -> m (Maybe SourceSpan, Binder)
     goBinder _ b@(PositionedBinder pos _ _) = return (Just pos, b)
-    goBinder pos (BinaryNoParensBinder (OpBinder name) lhs rhs) = case name `M.lookup` aliased of
+    goBinder pos (BinaryNoParensBinder (OpBinder name) lhs rhs) = case name `M.lookup` valueAliased of
       Just (Qualified _ (AliasValue alias)) ->
         maybe id rethrowWithPosition pos $
           throwError . errorMessage $ InvalidOperatorInBinder (disqualify name) alias
@@ -114,7 +142,7 @@ rebracket externs ms = do
     goType pos = everywhereOnTypesM go
       where
       go :: Type -> m Type
-      go (TypeOp name) = case name `M.lookup` aliased of
+      go (TypeOp name) = case name `M.lookup` typeAliased of
         Just (Qualified mn' (AliasType alias)) ->
           return $ TypeConstructor (Qualified mn' alias)
         _ ->
@@ -131,17 +159,27 @@ removeSignedLiterals (Module ss coms mn ds exts) = Module ss coms mn (map f' ds)
   go other = other
 
 rebracketModule
-  :: (MonadError MultipleErrors m)
+  :: forall m
+   . (MonadError MultipleErrors m)
   => [[(Qualified Ident, Associativity)]]
+  -> [[(Qualified Ident, Associativity)]]
   -> Module
   -> m Module
-rebracketModule opTable (Module ss coms mn ds exts) =
+rebracketModule valueOpTable typeOpTable (Module ss coms mn ds exts) =
   Module ss coms mn <$> (map removeParens <$> parU ds f) <*> pure exts
   where
-  (f, _, _) = everywhereOnValuesTopDownM return (return . goExpr) (return . goBinder)
-  goExpr = matchExprOperators opTable
-  goBinder = matchBinderOperators opTable
-
+  goDecl :: Maybe SourceSpan -> Declaration -> m (Maybe SourceSpan, Declaration)
+  (goDecl, goExpr') = updateTypes (\_ -> goType)
+  (f, _, _) =
+      everywhereOnValuesTopDownM
+        (decontextify goDecl)
+        (goExpr <=< decontextify goExpr')
+        goBinder
+  goExpr = return . matchExprOperators valueOpTable
+  goBinder = return . matchBinderOperators valueOpTable
+  goType = return . matchTypeOperators typeOpTable
+  decontextify :: (Maybe SourceSpan -> a -> m (Maybe SourceSpan, a)) -> a -> m a
+  decontextify ctxf a = snd <$> ctxf Nothing a
 
 removeParens :: Declaration -> Declaration
 removeParens =
