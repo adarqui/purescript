@@ -1,6 +1,4 @@
-{-# LANGUAGE Rank2Types #-}
 {-# LANGUAGE FlexibleContexts #-}
-{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE RecordWildCards #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -11,11 +9,11 @@
 -- The value parser ignores fixity data when parsing binary operator applications, so
 -- it is necessary to reorder them here.
 --
-module Language.PureScript.Sugar.Operators (
-  rebracket,
-  removeSignedLiterals,
-  desugarOperatorSections
-) where
+module Language.PureScript.Sugar.Operators
+  ( rebracket
+  , removeSignedLiterals
+  , desugarOperatorSections
+  ) where
 
 import Prelude ()
 import Prelude.Compat
@@ -30,6 +28,7 @@ import Language.PureScript.Sugar.Operators.Expr
 import Language.PureScript.Traversals (defS, sndM)
 import Language.PureScript.Types
 
+import Control.Monad ((<=<))
 import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.Supply.Class
 
@@ -74,29 +73,18 @@ rebracket externs ms = do
   renameAliasedOperators aliased (Module ss coms mn ds exts) =
     Module ss coms mn <$> mapM f' ds <*> pure exts
     where
-    (f', _, _, _, _) = everywhereWithContextOnValuesM Nothing goDecl goExpr goBinder defS defS
+    (goDecl', goExpr') = updateTypes goType
+    (f', _, _, _, _) =
+      everywhereWithContextOnValuesM
+        Nothing
+        (\pos -> uncurry goDecl <=< goDecl' pos)
+        (\pos -> uncurry goExpr <=< goExpr' pos)
+        goBinder
+        defS
+        defS
 
     goDecl :: Maybe SourceSpan -> Declaration -> m (Maybe SourceSpan, Declaration)
     goDecl _ d@(PositionedDeclaration pos _ _) = return (Just pos, d)
-    goDecl pos (DataDeclaration ddt name args dctors) = do
-      dctors' <- traverse (sndM (traverse (goType pos))) dctors
-      return (pos, DataDeclaration ddt name args dctors')
-    goDecl pos (ExternDeclaration name ty) = do
-      ty' <- goType pos ty
-      return (pos, ExternDeclaration name ty')
-    goDecl pos (TypeClassDeclaration name args implies decls) = do
-      implies' <- traverse (sndM (traverse (goType pos))) implies
-      return (pos, TypeClassDeclaration name args implies' decls)
-    goDecl pos (TypeInstanceDeclaration name cs className tys impls) = do
-      cs' <- traverse (sndM (traverse (goType pos))) cs
-      tys' <- traverse (goType pos) tys
-      return (pos, TypeInstanceDeclaration name cs' className tys' impls)
-    goDecl pos (TypeSynonymDeclaration name args ty) = do
-      ty' <- goType pos ty
-      return (pos, TypeSynonymDeclaration name args ty')
-    goDecl pos (TypeDeclaration expr ty) = do
-      ty' <- goType pos ty
-      return (pos, TypeDeclaration expr ty')
     goDecl pos other = return (pos, other)
 
     goExpr :: Maybe SourceSpan -> Expr -> m (Maybe SourceSpan, Expr)
@@ -105,15 +93,6 @@ rebracket externs ms = do
       Just (Qualified mn' (AliasValue alias)) -> Var (Qualified mn' alias)
       Just (Qualified mn' (AliasConstructor alias)) -> Constructor (Qualified mn' alias)
       _ -> Var name)
-    goExpr pos (TypeClassDictionary (name, tys) dicts) = do
-      tys' <- traverse (goType pos) tys
-      return (pos, TypeClassDictionary (name, tys') dicts)
-    goExpr pos (SuperClassDictionary cls tys) = do
-      tys' <- traverse (goType pos) tys
-      return (pos, SuperClassDictionary cls tys')
-    goExpr pos (TypedValue check v ty) = do
-      ty' <- goType pos ty
-      return (pos, TypedValue check v ty')
     goExpr pos other = return (pos, other)
 
     goBinder :: Maybe SourceSpan -> Binder -> m (Maybe SourceSpan, Binder)
@@ -237,3 +216,49 @@ desugarOperatorSections (Module ss coms mn ds exts) =
       Left  val -> f2 val var
       Right val -> f2 var val
   goExpr other = return other
+
+updateTypes
+  :: forall m
+   . Monad m
+  => (Maybe SourceSpan -> Type -> m Type)
+  -> ( Maybe SourceSpan -> Declaration -> m (Maybe SourceSpan, Declaration)
+     , Maybe SourceSpan -> Expr -> m (Maybe SourceSpan, Expr)
+     )
+updateTypes goType = (goDecl, goExpr)
+  where
+
+  goDecl :: Maybe SourceSpan -> Declaration -> m (Maybe SourceSpan, Declaration)
+  goDecl _ d@(PositionedDeclaration pos _ _) = return (Just pos, d)
+  goDecl pos (DataDeclaration ddt name args dctors) = do
+    dctors' <- traverse (sndM (traverse (goType pos))) dctors
+    return (pos, DataDeclaration ddt name args dctors')
+  goDecl pos (ExternDeclaration name ty) = do
+    ty' <- goType pos ty
+    return (pos, ExternDeclaration name ty')
+  goDecl pos (TypeClassDeclaration name args implies decls) = do
+    implies' <- traverse (sndM (traverse (goType pos))) implies
+    return (pos, TypeClassDeclaration name args implies' decls)
+  goDecl pos (TypeInstanceDeclaration name cs className tys impls) = do
+    cs' <- traverse (sndM (traverse (goType pos))) cs
+    tys' <- traverse (goType pos) tys
+    return (pos, TypeInstanceDeclaration name cs' className tys' impls)
+  goDecl pos (TypeSynonymDeclaration name args ty) = do
+    ty' <- goType pos ty
+    return (pos, TypeSynonymDeclaration name args ty')
+  goDecl pos (TypeDeclaration expr ty) = do
+    ty' <- goType pos ty
+    return (pos, TypeDeclaration expr ty')
+  goDecl pos other = return (pos, other)
+
+  goExpr :: Maybe SourceSpan -> Expr -> m (Maybe SourceSpan, Expr)
+  goExpr _ e@(PositionedValue pos _ _) = return (Just pos, e)
+  goExpr pos (TypeClassDictionary (name, tys) dicts) = do
+    tys' <- traverse (goType pos) tys
+    return (pos, TypeClassDictionary (name, tys') dicts)
+  goExpr pos (SuperClassDictionary cls tys) = do
+    tys' <- traverse (goType pos) tys
+    return (pos, SuperClassDictionary cls tys')
+  goExpr pos (TypedValue check v ty) = do
+    ty' <- goType pos ty
+    return (pos, TypedValue check v ty')
+  goExpr pos other = return (pos, other)
