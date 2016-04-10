@@ -35,6 +35,7 @@ import Control.Monad.Error.Class (MonadError(..))
 import Control.Monad.Supply.Class
 
 import Data.Function (on)
+import Data.Functor.Identity
 import Data.List (partition, groupBy, sortBy)
 import Data.Maybe (mapMaybe)
 import qualified Data.Map as M
@@ -59,7 +60,7 @@ rebracket
   -> [Module]
   -> m [Module]
 rebracket externs ms = do
-  let (valueFixities, typeFixities) = partition isTypeFixity $
+  let (typeFixities, valueFixities) = partition isTypeFixity $
         concatMap externsFixities externs ++ concatMap collectFixities ms
 
   ensureNoDuplicates' $ valueFixities
@@ -168,28 +169,54 @@ rebracketModule
 rebracketModule valueOpTable typeOpTable (Module ss coms mn ds exts) =
   Module ss coms mn <$> (map removeParens <$> parU ds f) <*> pure exts
   where
-  goDecl :: Maybe SourceSpan -> Declaration -> m (Maybe SourceSpan, Declaration)
-  (goDecl, goExpr') = updateTypes (\_ -> goType)
   (f, _, _) =
       everywhereOnValuesTopDownM
         (decontextify goDecl)
         (goExpr <=< decontextify goExpr')
         goBinder
+
+  (goDecl, goExpr') = updateTypes (\_ -> goType)
+
+  goExpr :: Expr -> m Expr
   goExpr = return . matchExprOperators valueOpTable
+
+  goBinder :: Binder -> m Binder
   goBinder = return . matchBinderOperators valueOpTable
+
+  goType :: Type -> m Type
   goType = return . matchTypeOperators typeOpTable
+
   decontextify :: (Maybe SourceSpan -> a -> m (Maybe SourceSpan, a)) -> a -> m a
-  decontextify ctxf a = snd <$> ctxf Nothing a
+  decontextify ctxf = fmap snd . ctxf Nothing
 
 removeParens :: Declaration -> Declaration
-removeParens =
-  let (f, _, _) = everywhereOnValues id goExpr goBinder
-  in f
+removeParens = f
   where
+  (f, _, _) =
+      everywhereOnValues
+        (decontextify goDecl)
+        (goExpr . decontextify goExpr')
+        goBinder
+
+  (goDecl, goExpr') = updateTypes (\_ -> return . goType)
+
+  goExpr :: Expr -> Expr
   goExpr (Parens val) = val
   goExpr val = val
+
+  goBinder :: Binder -> Binder
   goBinder (ParensInBinder b) = b
   goBinder b = b
+
+  goType :: Type -> Type
+  goType (ParensInType t) = t
+  goType t = t
+
+  decontextify
+    :: (Maybe SourceSpan -> a -> Identity (Maybe SourceSpan, a))
+    -> a
+    -> a
+  decontextify ctxf = snd . runIdentity . ctxf Nothing
 
 externsFixities
   :: ExternsFile
@@ -265,38 +292,41 @@ updateTypes
 updateTypes goType = (goDecl, goExpr)
   where
 
+  goType' :: Maybe SourceSpan -> Type -> m Type
+  goType' = everywhereOnTypesM . goType
+
   goDecl :: Maybe SourceSpan -> Declaration -> m (Maybe SourceSpan, Declaration)
   goDecl _ d@(PositionedDeclaration pos _ _) = return (Just pos, d)
   goDecl pos (DataDeclaration ddt name args dctors) = do
-    dctors' <- traverse (sndM (traverse (goType pos))) dctors
+    dctors' <- traverse (sndM (traverse (goType' pos))) dctors
     return (pos, DataDeclaration ddt name args dctors')
   goDecl pos (ExternDeclaration name ty) = do
-    ty' <- goType pos ty
+    ty' <- goType' pos ty
     return (pos, ExternDeclaration name ty')
   goDecl pos (TypeClassDeclaration name args implies decls) = do
-    implies' <- traverse (sndM (traverse (goType pos))) implies
+    implies' <- traverse (sndM (traverse (goType' pos))) implies
     return (pos, TypeClassDeclaration name args implies' decls)
   goDecl pos (TypeInstanceDeclaration name cs className tys impls) = do
-    cs' <- traverse (sndM (traverse (goType pos))) cs
-    tys' <- traverse (goType pos) tys
+    cs' <- traverse (sndM (traverse (goType' pos))) cs
+    tys' <- traverse (goType' pos) tys
     return (pos, TypeInstanceDeclaration name cs' className tys' impls)
   goDecl pos (TypeSynonymDeclaration name args ty) = do
-    ty' <- goType pos ty
+    ty' <- goType' pos ty
     return (pos, TypeSynonymDeclaration name args ty')
   goDecl pos (TypeDeclaration expr ty) = do
-    ty' <- goType pos ty
+    ty' <- goType' pos ty
     return (pos, TypeDeclaration expr ty')
   goDecl pos other = return (pos, other)
 
   goExpr :: Maybe SourceSpan -> Expr -> m (Maybe SourceSpan, Expr)
   goExpr _ e@(PositionedValue pos _ _) = return (Just pos, e)
   goExpr pos (TypeClassDictionary (name, tys) dicts) = do
-    tys' <- traverse (goType pos) tys
+    tys' <- traverse (goType' pos) tys
     return (pos, TypeClassDictionary (name, tys') dicts)
   goExpr pos (SuperClassDictionary cls tys) = do
-    tys' <- traverse (goType pos) tys
+    tys' <- traverse (goType' pos) tys
     return (pos, SuperClassDictionary cls tys')
   goExpr pos (TypedValue check v ty) = do
-    ty' <- goType pos ty
+    ty' <- goType' pos ty
     return (pos, TypedValue check v ty')
   goExpr pos other = return (pos, other)
